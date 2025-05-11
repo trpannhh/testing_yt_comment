@@ -65,13 +65,17 @@ def ask_question_api():
 
     try:
         # Check if we have a valid database to query
-        if not os.path.exists("chroma"):
-            if not latest_results:
-                return jsonify({'error': 'No analysis has been performed yet. Please analyze a video first.'}), 400
-            else:
-                video_id = latest_results.get('video_id')
-                return jsonify({'error': f'Database not found for video {video_id}. Please re-analyze the video.'}), 400
-
+        chroma_path = None
+        
+        # Try to find a Chroma database for the current video
+        if CURRENT_VIDEO_ID:
+            video_specific_path = f"chroma_{CURRENT_VIDEO_ID}"
+            if os.path.exists(video_specific_path):
+                chroma_path = video_specific_path
+        
+        if not chroma_path and not latest_results:
+            return jsonify({'error': 'No analysis has been performed yet. Please analyze a video first.'}), 400
+        
         # Convert k to integer if it's provided
         if k is not None:
             try:
@@ -99,16 +103,23 @@ def ask_question_api():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     try:
+        # Look for all video-specific databases
+        chroma_dirs = [d for d in os.listdir() if d.startswith("chroma_")]
+        
+        current_db = None
+        if CURRENT_VIDEO_ID:
+            current_db = f"chroma_{CURRENT_VIDEO_ID}"
+        
         status = {
-            'database_exists': os.path.exists("chroma"),
-            'current_video_id': CURRENT_VIDEO_ID
+            'available_databases': chroma_dirs,
+            'current_video_id': CURRENT_VIDEO_ID,
+            'current_database': current_db
         }
 
         # Add metadata from JSON file if it exists
-        metadata_path = os.path.join("chroma", "video_metadata.json")
-        if os.path.exists(metadata_path):
+        if current_db and os.path.exists(os.path.join(current_db, "video_metadata.json")):
             try:
-                with open(metadata_path, 'r', encoding='utf-8') as f:
+                with open(os.path.join(current_db, "video_metadata.json"), 'r', encoding='utf-8') as f:
                     metadata = json.load(f)
                 status['metadata'] = metadata
             except Exception as e:
