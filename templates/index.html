@@ -19,6 +19,11 @@
        </form>
     </div>
 
+    <div id="previous-videos-container" style="display: none;">
+       <h3>Previously Analyzed Videos</h3>
+       <div id="previous-videos-list"></div>
+    </div>
+
     <div id="loading" class="loading-container" style="display: none;">
        <div class="loading-spinner"></div>
        <p>Analyzing comments... This may take a few minutes.</p>
@@ -93,6 +98,8 @@
           const answerStats = document.getElementById('answer-stats');
           const kSlider = document.getElementById('k-slider');
           const kValue = document.getElementById('k-value');
+          const previousVideosContainer = document.getElementById('previous-videos-container');
+          const previousVideosList = document.getElementById('previous-videos-list');
           let currentVideoId = null;
 
           // Function to calculate optimal k value (matching the Python implementation)
@@ -166,6 +173,127 @@
               kValue.textContent = `Auto (${optimalK})`;
           }
 
+          // Function to check for previously analyzed videos
+          function checkPreviousVideos() {
+              fetch('/api/videos')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.available_videos && data.available_videos.length > 0) {
+                        // Clear previous list
+                        previousVideosList.innerHTML = '';
+                        
+                        // Add each video to the list
+                        data.available_videos.forEach(video => {
+                            const videoItem = document.createElement('div');
+                            videoItem.className = 'video-item';
+                            
+                            // Extract video title or use ID
+                            const videoTitle = video.metadata?.title || `Video ${video.video_id}`;
+                            const commentCount = video.metadata?.comment_count || 'unknown';
+                            
+                            videoItem.innerHTML = `
+                                <a href="#" class="video-link" data-video-id="${video.video_id}">
+                                    ${videoTitle} (${commentCount} comments)
+                                </a>
+                            `;
+                            
+                            previousVideosList.appendChild(videoItem);
+                        });
+                        
+                        // Add click handlers
+                        document.querySelectorAll('.video-link').forEach(link => {
+                            link.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                const videoId = this.getAttribute('data-video-id');
+                                loadPreviousVideo(videoId);
+                            });
+                        });
+                        
+                        // Show the container
+                        previousVideosContainer.style.display = 'block';
+                    }
+                })
+                .catch(err => console.error('Error fetching previous videos:', err));
+          }
+
+          // Function to load a previously analyzed video
+          function loadPreviousVideo(videoId) {
+              // Show loading indicator
+              loadingIndicator.style.display = 'flex';
+              resultsContainer.style.display = 'none';
+              answerContent.style.display = 'none';
+              answerStats.style.display = 'none';
+              
+              // Set current video ID
+              currentVideoId = videoId;
+              
+              // Load the visualization results for this video
+              fetch(`/api/status?video_id=${videoId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.metadata) {
+                        // Extract data from metadata
+                        const commentCount = data.metadata.comment_count;
+                        
+                        // Load the visualization files
+                        const chartPath = `sentiment_pie_chart_${videoId}.png`;
+                        const wordcloudPath = `comment_wordcloud_${videoId}.png`;
+                        const summaryPath = `overall_summary_${videoId}.txt`;
+                        const sentimentSummaryPath = `sentiment_summary_${videoId}.txt`;
+                        
+                        // Fetch summary content
+                        fetch(summaryPath)
+                            .then(response => response.text())
+                            .then(text => {
+                                // Update UI
+                                document.getElementById('summary-content').innerHTML = formatParagraphs(text);
+                                document.getElementById('sentiment-chart').src = chartPath + '?t=' + new Date().getTime();
+                                document.getElementById('wordcloud-image').src = wordcloudPath + '?t=' + new Date().getTime();
+                                
+                                // Fetch sentiment summary
+                                return fetch(sentimentSummaryPath);
+                            })
+                            .then(response => response.text())
+                            .then(text => {
+                                // Split into positive and negative parts
+                                const parts = text.split('\n\n');
+                                const positivePart = parts[0] || '';
+                                const negativePart = parts[1] || '';
+                                
+                                document.getElementById('sentiment-summary').innerHTML = `
+                                <div class="summary-section">
+                                <strong>Positive Aspects:</strong><br>
+                                ${formatBullets(positivePart)}
+                                <br><strong>Negative Aspects:</strong><br>
+                                ${formatBullets(negativePart)}
+                                </div>
+                                `;
+                                
+                                // Update QA interface
+                                updateKGuidance(commentCount);
+                                initializeKSlider(commentCount);
+                                
+                                // Hide loading indicator and show results
+                                loadingIndicator.style.display = 'none';
+                                resultsContainer.style.display = 'flex';
+                            })
+                            .catch(err => {
+                                console.error('Error loading summary files:', err);
+                                loadingIndicator.style.display = 'none';
+                                alert('Error loading analysis files. Please try analyzing again.');
+                            });
+                    } else {
+                        loadingIndicator.style.display = 'none';
+                        alert('No metadata found for this video. Please try analyzing again.');
+                    }
+                })
+                .catch(err => {
+                    console.error('Error loading previous video:', err);
+                    loadingIndicator.style.display = 'none';
+                    alert('Error loading previous video. Please try analyzing again.');
+                });
+          }
+
           // Handle k-slider changes
           kSlider.addEventListener('input', function() {
              const val = parseInt(this.value);
@@ -205,7 +333,7 @@
                 const sliderValue = parseInt(kSlider.value);
 
                 // Call the backend to answer the question
-                askQuestion(question, sliderValue === 0 ? null : sliderValue);
+                askQuestion(question, sliderValue === 0 ? null : sliderValue, currentVideoId);
              }
           });
 
@@ -231,6 +359,9 @@
 
                 // Process the response data
                 displayResults(data);
+                
+                // Refresh list of previous videos
+                checkPreviousVideos();
              })
              .catch(error => {
                 console.error('Error:', error);
@@ -295,11 +426,14 @@
           }
 
           // Function to ask additional questions
-          function askQuestion(question, k = null) {
+          function askQuestion(question, k = null, videoId = null) {
              // Prepare request payload
              const payload = { question: question };
              if (k !== null) {
                 payload.k = k;
+             }
+             if (videoId !== null) {
+                payload.video_id = videoId;
              }
 
              fetch('/api/ask', {
@@ -318,6 +452,13 @@
              .then(data => {
                 // Hide loading indicator
                 qaLoadingIndicator.style.display = 'none';
+
+                // Handle error if present
+                if (data.error) {
+                    answerContent.innerHTML = `<p class="error-message">Error: ${data.error}</p>`;
+                    answerContent.style.display = 'block';
+                    return;
+                }
 
                 // Display processing stats if available
                 if (data.processing_time) {
@@ -347,12 +488,16 @@
              });
           }
 
+          // Check for previous videos on page load
+          checkPreviousVideos();
+          
           // Check database status on page load
           fetch('/api/status')
             .then(response => response.json())
             .then(data => {
                if (data.database_exists && data.current_video_id) {
                   console.log(`Database exists for video ID: ${data.current_video_id}`);
+                  currentVideoId = data.current_video_id;
 
                   if (data.metadata && data.metadata.comment_count) {
                      // Set max value for k-slider based on comment count
